@@ -113,12 +113,12 @@ class VoeResolver : VideoResolver {
         }
     }
 
-    private fun withHeaders(url: String, referer: String): ResolvedVideo {
+    private fun withHeaders(url: String, referer: String): String {
         val normalized = when {
             url.startsWith("//") -> "https:$url"
             url.startsWith("http") -> url
             else -> url
         }
-        return ResolvedVideo(normalized, referer = referer)
+        return normalized
     }
 }

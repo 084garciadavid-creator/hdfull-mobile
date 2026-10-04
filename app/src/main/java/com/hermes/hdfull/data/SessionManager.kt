@@ -20,10 +20,20 @@ class SessionManager(context: Context) {
         get() = prefs.getString("username", "") ?: ""
         set(v) = prefs.edit { putString("username", v) }
 
+    /** Cookies de sesión persistidas (para no perder la sesión al reiniciar). */
+    var cookiesJson: String
+        get() = prefs.getString("cookies", "") ?: ""
+        set(v) = prefs.edit { putString("cookies", v) }
+
     fun logout() {
         prefs.edit {
             putBoolean("logged_in", false)
             putString("host", "")
+            putString("cookies", "")
         }
     }
+
+    /** true si hay sesión marcada Y cookies guardadas. */
+    fun hasValidSession(): Boolean =
+        loggedIn && host.isNotBlank() && cookiesJson.isNotBlank()
 }

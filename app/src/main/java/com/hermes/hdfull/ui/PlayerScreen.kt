@@ -118,12 +118,7 @@ fun PlayerScreen(embedUrl: String, title: String, onBack: () -> Unit) {
         if (rname != null) status = "Resolviendo con $rname…"
         val resolved = ResolverRegistry.resolve(embedUrl)
         if (resolved != null) {
-            // Usar el referer del resolutor si lo proporciona (punto 5 del análisis)
-            val ref = resolved.referer ?: embedUrl
-            val headers = resolved.headers + mapOf("Referer" to ref)
-            // Los headers son necesarios para resolver el enlace, pero el
-            // reproductor externo recibe únicamente la URL directa.
-            onResolvedWithHeaders(resolved.url, headers)
+            onResolvedWithHeaders(resolved, mapOf("Referer" to embedUrl))
         } else {
             nativeFailed = true
             if (rname == null) status = "Resolviendo vídeo…"

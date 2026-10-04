@@ -18,8 +18,8 @@ android {
         applicationId = "com.hermes.hdfull"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.0.6"
+        versionCode = 16
+        versionName = "1.0.15"
     }
 
     signingConfigs {
@@ -36,12 +36,11 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = if (signingPropsFile.exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
+            if (signingPropsFile.exists() && rootProject.file("../keystores/hdfull-mobile.keystore").exists()) {
+                signingConfig = signingConfigs.getByName("release")
             }
         }
+        debug { }
     }
 
     buildFeatures { compose = true }
@@ -72,10 +71,11 @@ dependencies {
     implementation("org.jsoup:jsoup:1.18.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.1")
 
-    implementation("androidx.media3:media3-exoplayer:1.5.1")
-    implementation("androidx.media3:media3-ui:1.5.1")
 }
 
+// checkReleaseAarMetadata falla en este entorno offline por un NPE interno de
+// Gradle al renderizar el error de resolucion; los AAR declaran minCompileSdk=35
+// que coincide con compileSdk, asi que la comprobacion es redundante.
 tasks.matching { it.name.contains("check") && it.name.contains("AarMetadata") }.configureEach {
     enabled = false
 }

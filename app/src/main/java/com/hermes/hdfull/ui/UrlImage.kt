@@ -43,7 +43,6 @@ fun UrlImage(
                 val req = Request.Builder()
                     .url(url)
                     .header("User-Agent", HdfullClient.UA)
-                    .header("Referer", "https://hdfull.zip/")
                     .build()
                 imageHttp.newCall(req).execute().use { resp ->
                     val body = resp.body ?: return@withContext

@@ -43,6 +43,9 @@ object HdfullClient {
             cookieStore[url.host]?.filter { it.matches(url) } ?: emptyList()
     }
 
+    /** CookieJar compartido: los resolutores lo usan para heredar sesión y Cloudflare. */
+    val sharedCookieJar: CookieJar get() = cookieJar
+
     private val client = OkHttpClient.Builder()
         .cookieJar(cookieJar)
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -71,7 +74,66 @@ object HdfullClient {
         }
     }
 
-    fun clearCookies() = cookieStore.clear()
+    fun clearCookies() {
+        cookieStore.clear()
+        try {
+            CookieManager.getInstance().removeAllCookies(null)
+            CookieManager.getInstance().flush()
+        } catch (e: Exception) {
+            // CookieManager puede no estar disponible durante un cierre temprano.
+        }
+    }
+
+    /** Guarda las cookies en el SessionManager para persistir la sesión. */
+    fun saveCookies(session: SessionManager) {
+        try {
+            val all = mutableListOf<Map<String, String>>()
+            for ((host, list) in cookieStore) {
+                for (c in list) {
+                    all.add(mapOf(
+                        "host" to host,
+                        "name" to c.name,
+                        "value" to c.value,
+                        "path" to c.path,
+                        "expires" to c.expiresAt.toString(),
+                        "secure" to c.secure.toString(),
+                        "httpOnly" to c.httpOnly.toString()
+                    ))
+                }
+            }
+            val json = org.json.JSONArray(all.map { m ->
+                org.json.JSONObject(m as Map<*, *>)
+            }).toString()
+            session.cookiesJson = json
+        } catch (e: Exception) { /* ignore */ }
+    }
+
+    /** Restaura las cookies desde el SessionManager al arrancar. */
+    fun loadCookies(session: SessionManager) {
+        try {
+            val json = session.cookiesJson
+            if (json.isBlank()) return
+            val arr = org.json.JSONArray(json)
+            cookieStore.clear()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val host = o.optString("host")
+                val cookie = Cookie.Builder()
+                    .name(o.optString("name"))
+                    .value(o.optString("value"))
+                    .domain(host)
+                    .path(o.optString("path", "/"))
+                    .apply {
+                        val exp = o.optString("expires", "0").toLongOrNull() ?: 0
+                        if (exp > System.currentTimeMillis()) expiresAt(exp)
+                        if (o.optString("secure") == "true") secure()
+                        if (o.optString("httpOnly") == "true") httpOnly()
+                    }
+                    .build()
+                cookieStore.getOrPut(host) { mutableListOf() }.add(cookie)
+            }
+        } catch (e: Exception) { /* ignore */ }
+    }
 
     /** Exporta las cookies de la sesión nativa al WebView (pantallas internas). */
     fun exportCookiesToWebView(url: String) {
@@ -285,43 +347,144 @@ object HdfullClient {
         val fullUrl = resolveUrl(host, url)
         val html = getHtml(fullUrl)
         val doc = Jsoup.parse(html)
-        val title = doc.selectFirst("meta[property=og:title]")?.attr("content")
+        val title = doc.selectFirst("#summary-title")?.text()?.trim()
+            ?: doc.selectFirst("meta[property=og:title]")?.attr("content")
             ?: doc.title().substringBefore(" - ")
-        val poster = doc.selectFirst("meta[property=og:image]")?.attr("content") ?: ""
-        // La sinopsis suele estar en el div de descripción principal
-        var synopsis = doc.selectFirst("div.show-details div.desc p")?.text()?.trim() ?: ""
+        val poster = doc.selectFirst(".show-poster img.video-page-thumbnail")?.attr("src")
+            ?: doc.selectFirst("meta[property=og:image]")?.attr("content") ?: ""
+        // Sinopsis: div[itemprop=description], texto antes de "Elenco:"
+        var synopsis = doc.selectFirst("#summary-overview-wrapper .show-overview-text")?.text()?.trim() ?: ""
         if (synopsis.isBlank()) {
-            synopsis = doc.selectFirst("div.ficha div.desc")?.text()?.trim() ?: ""
+            synopsis = doc.selectFirst("div[itemprop=description]")?.text()?.trim() ?: ""
         }
-        if (synopsis.isBlank()) {
-            // Buscar el párrafo más largo dentro de show-details (suele ser la sinopsis)
-            synopsis = doc.select("div.show-details p")
-                .map { it.text().trim() }
-                .filter { it.length > 80 && !it.contains("Elenco:", ignoreCase = true) }
-                .maxByOrNull { it.length } ?: ""
+        if (synopsis.contains("Elenco:", ignoreCase = true)) {
+            synopsis = synopsis.substringBefore("Elenco:").trim()
         }
-        var year = ""
-        var genre = ""
-        var cast = ""
-        // Año/género/elenco en los <p> de la ficha
-        doc.select("div.show-details p").forEach { p ->
-            val t = p.text()
-            when {
-                t.contains("Año:", ignoreCase = true) && year.isBlank() ->
-                    year = Regex("""Año:\s*(\d{4})""").find(t)?.groupValues?.get(1) ?: ""
-                t.contains("nero:", ignoreCase = true) && genre.isBlank() ->
-                    genre = t.substringAfter("nero:", "").trim().substringBefore("Director:").trim()
-                t.contains("Elenco:", ignoreCase = true) && cast.isBlank() ->
-                    cast = t.substringAfter("Elenco:", "").trim()
+        val year = doc.selectFirst(".show-details a[href^=\"/buscar/year\"]")?.text()?.trim()
+            ?: Regex("""Año:\s*(\d{4})""").find(html)?.groupValues?.get(1) ?: ""
+        val genre = doc.select(".show-details a[itemprop=genre]").map { it.text().trim() }
+            .filter { it.isNotBlank() }.joinToString(" ").ifBlank {
+                Regex("""Género:\s*([^<]+?)(?:Director:|Elenco:|<)""").find(html)?.groupValues?.get(1)?.trim() ?: ""
             }
-        }
-        if (year.isBlank()) {
-            year = Regex("""Año:\s*(\d{4})""").find(html)?.groupValues?.get(1) ?: ""
-        }
-        if (genre.isBlank()) {
-            genre = Regex("""Género:\s*([^<]+?)(?:Director:|Elenco:|<)""").find(html)?.groupValues?.get(1)?.trim() ?: ""
-        }
+        val cast = doc.selectFirst("#summary-overview-wrapper .show-overview-text")?.let { el ->
+            val t = el.text()
+            if (t.contains("Elenco:", ignoreCase = true)) t.substringAfter("Elenco:").trim() else ""
+        } ?: ""
         return MovieInfo(title.trim(), poster, synopsis, year, genre, cast)
+    }
+
+    /** Enlace de vídeo extraído de la lista de servidores. */
+    data class ServerLink(
+        val server: String,
+        val language: String,
+        val quality: String,
+        val extUrl: String, // URL /ext/... que redirige al embed
+        val dataId: String
+    )
+
+    /** Extrae la lista de servidores de una página de película/episodio. */
+    suspend fun serverLinks(host: String, url: String): List<ServerLink> {
+        val fullUrl = resolveUrl(host, url)
+        val html = getHtml(fullUrl)
+        val out = mutableListOf<ServerLink>()
+
+        // Método 1: Jsoup con la estructura #embed-list
+        try {
+            val doc = Jsoup.parse(html, host)
+            for (el in doc.select("#embed-list .embed-selector[data-id]")) {
+                try {
+                    val dataId = el.attr("data-id")
+                    val server = el.selectFirst(".provider")?.text()?.trim() ?: ""
+                    var language = ""
+                    var quality = ""
+                    el.select("h5.left span").forEach { sp ->
+                        val t = sp.text()
+                        when {
+                            t.contains("Idioma:", ignoreCase = true) -> language = t.substringAfter("Idioma:", "").trim()
+                            t.contains("Calidad:", ignoreCase = true) -> quality = t.substringAfter("Calidad:", "").trim()
+                        }
+                    }
+                    val a = el.select("ul.action-buttons a[target=\"_blank\"]").firstOrNull { it.hasAttr("href") }
+                        ?: el.select("ul.action-buttons a[href]").firstOrNull { it.attr("href").contains("/ext/") }
+                        ?: continue
+                    var href = a.attr("abs:href")
+                    if (href.isBlank()) {
+                        href = host.trimEnd('/') + "/" + a.attr("href").trimStart('/')
+                    }
+                    if (server.isBlank() && href.isBlank()) continue
+                    out.add(ServerLink(server, language, quality, href, dataId))
+                } catch (e: Exception) { /* skip */ }
+            }
+        } catch (e: Exception) { /* fallback a regex */ }
+
+        // Método 2 (respaldo): buscar /ext/... directamente en el HTML con regex
+        if (out.isEmpty()) {
+            try {
+                // Buscar bloques de embed-selector con regex
+                val blockRe = Regex("""data-id="(\d+)"[^>]*>.*?class="provider"[^>]*>([^<]+)<.*?href="(/ext/[^"]+)"""", RegexOption.DOT_MATCHES_ALL)
+                // Enfoque más simple: todos los /ext/ únicos
+                val extRe = Regex("""/ext/([A-Za-z0-9+/=]+)""")
+                val seen = mutableSetOf<String>()
+                for (m in extRe.findAll(html)) {
+                    val extPath = m.value
+                    if (!seen.add(extPath)) continue
+                    val fullExt = if (extPath.startsWith("http")) extPath else host.trimEnd('/') + extPath
+                    // Intentar deducir servidor del contexto cercano (200 chars antes)
+                    val ctxStart = maxOf(0, m.range.first - 2000)
+                    val ctx = html.substring(ctxStart, m.range.first)
+                    val srvM = Regex("""class="provider"[^>]*>([^<]+)<""").findAll(ctx).lastOrNull()
+                    val server = srvM?.groupValues?.get(1)?.trim() ?: ""
+                    val langM = Regex("""Idioma:</b>\s*([^<]+)""").findAll(ctx).lastOrNull()
+                    val language = langM?.groupValues?.get(1)?.trim() ?: ""
+                    val qM = Regex("""Calidad:</b>\s*([^<]+)""").findAll(ctx).lastOrNull()
+                    val quality = qM?.groupValues?.get(1)?.trim() ?: ""
+                    val idM = Regex("""data-id="(\d+)"""").findAll(ctx).lastOrNull()
+                    val dataId = idM?.groupValues?.get(1) ?: ""
+                    out.add(ServerLink(server, language, quality, fullExt, dataId))
+                }
+            } catch (e: Exception) { /* ignore */ }
+        }
+
+        return out.distinctBy { it.extUrl }
+    }
+
+    /**
+     * Resuelve una URL /ext/... siguiendo redirecciones hasta el embed final.
+     * Devuelve la URL del reproductor embebido.
+     */
+    suspend fun resolveExtUrl(extUrl: String): String? = withContext(Dispatchers.IO) {
+        try {
+            // Sin followRedirects para capturar la redirección manualmente
+            val noRedirect = client.newBuilder().followRedirects(false).build()
+            var current = extUrl
+            repeat(5) {
+                noRedirect.newCall(
+                    Request.Builder()
+                        .url(current)
+                        .header("User-Agent", UA)
+                        .header("Referer", current)
+                        .build()
+                )
+                    .execute().use { resp ->
+                        val loc = resp.header("Location")
+                        if ((resp.code == 301 || resp.code == 302 || resp.code == 303 || resp.code == 307 || resp.code == 308) && loc != null) {
+                            current = current.toHttpUrl().resolve(loc)?.toString() ?: return@withContext null
+                            return@repeat
+                        }
+                        // Si devuelve HTML, buscar iframe o URL del embed
+                        val body = resp.body?.string() ?: ""
+                        val iframe = Regex("""<iframe[^>]+src=["']([^"']+)""").find(body)?.groupValues?.get(1)
+                        if (iframe != null) {
+                            current = current.toHttpUrl().resolve(iframe)?.toString() ?: iframe
+                            return@use
+                        }
+                        return@withContext current
+                    }
+            }
+            current
+        } catch (e: Exception) {
+            null
+        }
     }
 
     suspend fun seriesDetail(host: String, url: String): SeriesInfo {

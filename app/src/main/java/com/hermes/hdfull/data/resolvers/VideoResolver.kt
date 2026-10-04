@@ -14,13 +14,6 @@ import java.util.concurrent.TimeUnit
  * implementado con HTTP + análisis de texto, sin WebView.
  */
 
-/** Vídeo resuelto con sus headers necesarios (Referer, Origin, etc.). */
-data class ResolvedVideo(
-    val url: String,
-    val referer: String? = null,
-    val headers: Map<String, String> = emptyMap()
-)
-
 interface VideoResolver {
     /** Nombre del servidor que resuelve. */
     val name: String
@@ -32,7 +25,7 @@ interface VideoResolver {
      * Devuelve el vídeo resuelto con sus headers, o null si no puede.
      * Se ejecuta en Dispatchers.IO.
      */
-    suspend fun resolve(url: String): ResolvedVideo?
+    suspend fun resolve(url: String): String?
 }
 
 /** Cliente HTTP compartido por los resolutores, con las cookies de sesión de HdfullClient. */
@@ -79,9 +72,6 @@ internal fun hostOf(url: String): String =
  */
 object ResolverRegistry {
     private val resolvers: List<VideoResolver> = listOf(
-        PowvideoResolver(),
-        StreamplayResolver(),
-        VidmolyResolver(),
         DoodStreamResolver(),
         VoeResolver(),
         MixdropResolver(),
@@ -91,13 +81,13 @@ object ResolverRegistry {
         GenericResolver(), // último: patrones genéricos .mp4/.m3u8
     )
 
-    /** Devuelve el vídeo resuelto con headers o null si ningún resolutor pudo. */
-    suspend fun resolve(url: String): ResolvedVideo? {
+    /** Devuelve la URL directa del vídeo o null si ningún resolutor pudo. */
+    suspend fun resolve(url: String): String? {
         for (r in resolvers) {
             if (!r.matches(url)) continue
             try {
                 val resolved = r.resolve(url)
-                if (resolved != null && resolved.url.isNotBlank()) return resolved
+                if (!resolved.isNullOrBlank()) return resolved
             } catch (e: Exception) {
                 // probar con el siguiente
             }

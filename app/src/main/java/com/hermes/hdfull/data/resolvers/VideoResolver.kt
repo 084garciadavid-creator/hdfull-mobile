@@ -13,6 +13,14 @@ import java.util.concurrent.TimeUnit
  * (.mp4 / .m3u8). Equivalente en Kotlin a los plugins de ResolveURL,
  * implementado con HTTP + análisis de texto, sin WebView.
  */
+
+/** Vídeo resuelto con sus headers necesarios (Referer, Origin, etc.). */
+data class ResolvedVideo(
+    val url: String,
+    val referer: String? = null,
+    val headers: Map<String, String> = emptyMap()
+)
+
 interface VideoResolver {
     /** Nombre del servidor que resuelve. */
     val name: String
@@ -21,15 +29,16 @@ interface VideoResolver {
     fun matches(url: String): Boolean
 
     /**
-     * Devuelve la URL directa del vídeo o null si no puede resolverla.
+     * Devuelve el vídeo resuelto con sus headers, o null si no puede.
      * Se ejecuta en Dispatchers.IO.
      */
-    suspend fun resolve(url: String): String?
+    suspend fun resolve(url: String): ResolvedVideo?
 }
 
-/** Cliente HTTP compartido por los resolutores (sin cookies de sesión). */
+/** Cliente HTTP compartido por los resolutores, con las cookies de sesión de HdfullClient. */
 internal val resolverHttp: OkHttpClient by lazy {
     OkHttpClient.Builder()
+        .cookieJar(com.hermes.hdfull.data.HdfullClient.sharedCookieJar)
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)
@@ -70,6 +79,9 @@ internal fun hostOf(url: String): String =
  */
 object ResolverRegistry {
     private val resolvers: List<VideoResolver> = listOf(
+        PowvideoResolver(),
+        StreamplayResolver(),
+        VidmolyResolver(),
         DoodStreamResolver(),
         VoeResolver(),
         MixdropResolver(),
@@ -79,19 +91,22 @@ object ResolverRegistry {
         GenericResolver(), // último: patrones genéricos .mp4/.m3u8
     )
 
-    /** Devuelve la URL directa del vídeo o null si ningún resolutor pudo. */
-    suspend fun resolve(url: String): String? {
+    /** Devuelve el vídeo resuelto con headers o null si ningún resolutor pudo. */
+    suspend fun resolve(url: String): ResolvedVideo? {
         for (r in resolvers) {
             if (!r.matches(url)) continue
             try {
-                val direct = r.resolve(url)
-                if (!direct.isNullOrBlank()) return direct
+                val resolved = r.resolve(url)
+                if (resolved != null && resolved.url.isNotBlank()) return resolved
             } catch (e: Exception) {
                 // probar con el siguiente
             }
         }
         return null
     }
+
+    /** Compatibilidad: devuelve solo la URL. */
+    suspend fun resolveUrl(url: String): String? = resolve(url)?.url
 
     /** Nombre del resolutor que aceptaría esta URL (para diagnóstico). */
     fun resolverNameFor(url: String): String? =

@@ -36,10 +36,11 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
-        }
-        debug {
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (signingPropsFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
@@ -75,9 +76,6 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.5.1")
 }
 
-// checkReleaseAarMetadata falla en este entorno offline por un NPE interno de
-// Gradle al renderizar el error de resolucion; los AAR declaran minCompileSdk=35
-// que coincide con compileSdk, asi que la comprobacion es redundante.
 tasks.matching { it.name.contains("check") && it.name.contains("AarMetadata") }.configureEach {
     enabled = false
 }

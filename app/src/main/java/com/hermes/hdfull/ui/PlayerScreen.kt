@@ -8,7 +8,6 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -20,12 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.common.MediaItem
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.ui.PlayerView
 import com.hermes.hdfull.data.HdfullClient
 import com.hermes.hdfull.data.resolvers.ResolverRegistry
 import kotlinx.coroutines.delay
@@ -35,7 +28,6 @@ import java.util.regex.Pattern
 private val VIDEO_RE = Pattern.compile("""\.(mp4|m3u8|mpd)(\?|#|$)""", Pattern.CASE_INSENSITIVE)
 
 @SuppressLint("SetJavaScriptEnabled")
-@OptIn(UnstableApi::class)
 @Composable
 fun PlayerScreen(embedUrl: String, title: String, onBack: () -> Unit) {
     val ctx = LocalContext.current
@@ -44,20 +36,48 @@ fun PlayerScreen(embedUrl: String, title: String, onBack: () -> Unit) {
     var videoUrl by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf("Resolviendo vídeo…") }
     var resolving by remember { mutableStateOf(true) }
+    var externalOpened by remember { mutableStateOf(false) }
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
-    val player = remember {
-        val dsFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent(HdfullClient.UA)
-            .setDefaultRequestProperties(
-                mapOf("Referer" to embedUrl)
-            )
-        ExoPlayer.Builder(ctx)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dsFactory))
-            .build()
+    fun openExternalPlayer(url: String) {
+        if (externalOpened) return
+        externalOpened = true
+        val uri = android.net.Uri.parse(url)
+        try {
+            // Dixmax utiliza Pur Video Downloader (PVD) de Asize Soft.
+            // Se intenta primero su actividad específica.
+            val pvdIntent = android.content.Intent(
+                android.content.Intent.ACTION_VIEW,
+                uri
+            ).apply {
+                setClassName(
+                    "com.asizesoft.pvp.android",
+                    "com.asizesoft.pvp.android.activities.RemoteVideoPlayer"
+                )
+                setDataAndType(uri, "video/*")
+                putExtra(android.content.Intent.EXTRA_TITLE, title)
+            }
+            if (pvdIntent.resolveActivity(ctx.packageManager) != null) {
+                ctx.startActivity(pvdIntent)
+                return
+            }
+
+            // Fallback para VLC, MX Player u otro reproductor compatible.
+            val genericIntent = android.content.Intent(
+                android.content.Intent.ACTION_VIEW,
+                uri
+            ).apply {
+                setDataAndType(uri, "video/*")
+                putExtra(android.content.Intent.EXTRA_TITLE, title)
+            }
+            ctx.startActivity(android.content.Intent.createChooser(genericIntent, "Abrir con..."))
+        } catch (e: Exception) {
+            externalOpened = false
+            status = "Instala Pur Video Downloader (PVD) para reproducir este enlace"
+        }
     }
 
-    fun onResolved(url: String) {
+    fun onResolvedWithHeaders(url: String, _headers: Map<String, String>) {
         if (videoUrl != null) return
         videoUrl = url
         resolving = false
@@ -65,14 +85,16 @@ fun PlayerScreen(embedUrl: String, title: String, onBack: () -> Unit) {
             try { webViewRef.value?.stopLoading(); webViewRef.value?.destroy() } catch (e: Exception) { }
             webViewRef.value = null
         }
-        player.setMediaItem(MediaItem.fromUri(url))
-        player.prepare()
-        player.play()
+        // El reproductor es externo: se lanza solo con la URL directa resuelta.
+        openExternalPlayer(url)
+    }
+
+    fun onResolved(url: String) {
+        onResolvedWithHeaders(url, mapOf("Referer" to embedUrl))
     }
 
     DisposableEffect(Unit) {
         onDispose {
-            try { player.release() } catch (e: Exception) { }
             try { webViewRef.value?.destroy() } catch (e: Exception) { }
         }
     }
@@ -94,9 +116,14 @@ fun PlayerScreen(embedUrl: String, title: String, onBack: () -> Unit) {
     LaunchedEffect(embedUrl) {
         val rname = ResolverRegistry.resolverNameFor(embedUrl)
         if (rname != null) status = "Resolviendo con $rname…"
-        val direct = ResolverRegistry.resolve(embedUrl)
-        if (direct != null) {
-            onResolved(direct)
+        val resolved = ResolverRegistry.resolve(embedUrl)
+        if (resolved != null) {
+            // Usar el referer del resolutor si lo proporciona (punto 5 del análisis)
+            val ref = resolved.referer ?: embedUrl
+            val headers = resolved.headers + mapOf("Referer" to ref)
+            // Los headers son necesarios para resolver el enlace, pero el
+            // reproductor externo recibe únicamente la URL directa.
+            onResolvedWithHeaders(resolved.url, headers)
         } else {
             nativeFailed = true
             if (rname == null) status = "Resolviendo vídeo…"
@@ -104,7 +131,7 @@ fun PlayerScreen(embedUrl: String, title: String, onBack: () -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize().background(Color.Black)) {
+    Column(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black)) {
         Row(
             Modifier.fillMaxWidth().padding(8.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -161,15 +188,14 @@ fun PlayerScreen(embedUrl: String, title: String, onBack: () -> Unit) {
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (videoUrl != null) {
-                AndroidView(
-                    factory = { c ->
-                        PlayerView(c).apply {
-                            this.player = player
-                            useController = true
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
+                Column(
+                    Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator(color = Gold)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Abriendo Pur Video Downloader…", color = TextGrey)
+                }
             } else {
                 Column(
                     Modifier.align(Alignment.Center),
@@ -182,8 +208,8 @@ fun PlayerScreen(embedUrl: String, title: String, onBack: () -> Unit) {
                         Spacer(Modifier.height(12.dp))
                         Button(
                             onClick = onBack,
-                            colors = ButtonDefaults.buttonColors(containerColor = Gold)
-                        ) { Text("Volver", color = androidx.compose.ui.graphics.Color.Black) }
+                            colors = ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color.DarkGray)
+                        ) { Text("Volver", color = TextWhite) }
                     }
                 }
             }

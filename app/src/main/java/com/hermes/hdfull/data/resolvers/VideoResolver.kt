@@ -96,7 +96,7 @@ object ResolverRegistry {
     }
 
     /** Compatibilidad: devuelve solo la URL. */
-    suspend fun resolveUrl(url: String): String? = resolve(url)?.url
+    suspend fun resolveUrl(url: String): String? = resolve(url)
 
     /** Nombre del resolutor que aceptaría esta URL (para diagnóstico). */
     fun resolverNameFor(url: String): String? =

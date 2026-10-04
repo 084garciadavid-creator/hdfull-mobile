@@ -24,7 +24,7 @@ class VoeResolver : VideoResolver {
         return h.contains("voe") || domainRe.matcher(url).find()
     }
 
-    override suspend fun resolve(url: String): ResolvedVideo? {
+    override suspend fun resolve(url: String): String? {
         var webUrl = url
         val initialReferer = runCatching {
             val parsed = url.toHttpUrl()

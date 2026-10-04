@@ -1,6 +1,7 @@
 package com.hermes.hdfull.data.resolvers
 
 import android.util.Base64
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
 import java.util.regex.Pattern
 
@@ -23,9 +24,13 @@ class VoeResolver : VideoResolver {
         return h.contains("voe") || domainRe.matcher(url).find()
     }
 
-    override suspend fun resolve(url: String): String? {
+    override suspend fun resolve(url: String): ResolvedVideo? {
         var webUrl = url
-        var html = httpGet(webUrl, referer = "https://$webUrl/".substringBefore("/", "https://")) ?: return null
+        val initialReferer = runCatching {
+            val parsed = url.toHttpUrl()
+            "${parsed.scheme}://${parsed.host}/"
+        }.getOrDefault(url)
+        var html = httpGet(webUrl, referer = initialReferer) ?: return null
 
         // Seguir redirecciones JS del tipo window.location.href = '...'
         var guard = 0
@@ -108,12 +113,12 @@ class VoeResolver : VideoResolver {
         }
     }
 
-    private fun withHeaders(url: String, referer: String): String {
-        // Media3 ya envía Referer; aquí solo normalizamos el esquema
-        return when {
+    private fun withHeaders(url: String, referer: String): ResolvedVideo {
+        val normalized = when {
             url.startsWith("//") -> "https:$url"
             url.startsWith("http") -> url
             else -> url
         }
+        return ResolvedVideo(normalized, referer = referer)
     }
 }
